@@ -147,9 +147,8 @@ class BME680_Class {
      * @brief Main BME680 class for the temperature / humidity / pressure sensor
      */
 
-    TwoWire wire = TwoWire(1);
-
   public:
+    TwoWire wire = TwoWire(1);
     BME680_Class();                       // Class constructor (unused)
     ~BME680_Class();                      // Class destructor (unused)
     bool begin();                         // Start using I2C Communications

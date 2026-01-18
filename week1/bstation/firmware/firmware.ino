@@ -1,15 +1,23 @@
 /**
  * @file receiver.ino
- * @brief LoRa receiver for environmental sensor packets
+ * @brief LoRa receiver for BSEC2 environmental sensor packets
  *
- * Receives packets from sensor nodes and displays data on OLED + Serial
+ * Receives packets and sends data to an API server via WiFi
  */
 
 #include "display.h"
 #include "lora_config.h"
 #include "packet.h"
 #include <Arduino.h>
+#include <HTTPClient.h>
 #include <LoRaWan_APP.h>
+#include <WiFi.h>
+
+// --- CONFIGURATION ---
+const char *WIFI_SSID = "IITP-WiFi";
+const char *WIFI_PASS = "";
+const char *API_ENDPOINT = "http://192.170.9.119:5000/api/sensor";
+// ---------------------
 
 #define BAUD 115200
 
@@ -17,7 +25,7 @@ static OledDisplay oledDisplay;
 static RadioEvents_t radioEvents;
 
 static LoRaPacket rxPacket;
-static uint8_t rxBuffer[PACKET_SIZE + 10]; // Extra buffer space
+static uint8_t rxBuffer[PACKET_SIZE + 10];
 static uint16_t rxSize = 0;
 static bool packetReceived = false;
 
@@ -25,15 +33,10 @@ static int16_t lastRssi = 0;
 static int8_t lastSnr = 0;
 static uint32_t packetsReceived = 0;
 static uint32_t packetsError = 0;
+static int lastHttpStatus = 0;
 
-// Radio event callbacks
-static void onTxDone() {
-  // Not used in receiver mode
-}
-
-static void onTxTimeout() {
-  // Not used in receiver mode
-}
+static void onTxDone() {}
+static void onTxTimeout() {}
 
 static void onRxDone(uint8_t *payload, uint16_t size, int16_t rssi,
                      int8_t snr) {
@@ -45,62 +48,117 @@ static void onRxDone(uint8_t *payload, uint16_t size, int16_t rssi,
     memcpy(rxBuffer, payload, size);
     packetReceived = true;
   }
-
-  // Immediately go back to receive mode
   Radio.Rx(0);
 }
 
-static void onRxTimeout() {
-  // Continue listening
-  Radio.Rx(0);
-}
+static void onRxTimeout() { Radio.Rx(0); }
 
 static void onRxError() {
   packetsError++;
-  Serial.println("[RX] CRC Error detected");
+  Serial.println("[RX] CRC Error");
   Radio.Rx(0);
 }
 
-void setup() {
-  Serial.begin(BAUD);
-
-  Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
-
-  Serial.println("LoRa Receiver");
-  Serial.println("Initializing...");
-
-  // Initialize display
-  Serial.print("Initializing OLED...");
-  oledDisplay.init();
-  Serial.println("(done)");
-
-  // Configure radio callbacks
-  radioEvents.TxDone = onTxDone;
-  radioEvents.TxTimeout = onTxTimeout;
-  radioEvents.RxDone = onRxDone;
-  radioEvents.RxTimeout = onRxTimeout;
-  radioEvents.RxError = onRxError;
-
-  /* Initialize radio*/
-  Serial.print("Configuring LoRa radio...");
-  Radio.Init(&radioEvents);
-  Radio.SetChannel(RF_FREQUENCY);
-
-  Radio.SetRxConfig(MODEM_LORA, LORA_BANDWIDTH, LORA_SPREADING_FACTOR,
-                    LORA_CODINGRATE, 0, LORA_PREAMBLE_LENGTH,
-                    LORA_FIX_LENGTH_PAYLOAD_ON, 0, true, 0,
-                    0, LORA_IQ_INVERSION_ON, true, RX_TIMEOUT_VALUE);
-
-  Serial.println("(done)");
-
+// Connect to WiFi
+static void connectToWifi() {
+  Serial.printf("Connecting to %s...", WIFI_SSID);
   oledDisplay.clear();
-  oledDisplay.write(0, 0, " LORA RECEIVER ");
-  oledDisplay.write(0, 2, "Waiting for data...");
+  oledDisplay.write(0, 0, " Connecting WiFi ");
+  oledDisplay.write(0, 2, WIFI_SSID);
   oledDisplay.commit();
 
-  /*start receiving*/
-  Radio.Rx(0);
-  Serial.println("Listening for packets...\n");
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi Connected!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+    oledDisplay.write(0, 3, "Connected!");
+  } else {
+    Serial.println("\nWiFi Failed!");
+    oledDisplay.write(0, 3, "Failed!");
+  }
+  oledDisplay.commit();
+  delay(1000);
+}
+
+static const char *getIaqLabel(uint16_t iaq) {
+  if (iaq <= 50)
+    return "good";
+  if (iaq <= 100)
+    return "ok";
+  if (iaq <= 150)
+    return "fair";
+  if (iaq <= 200)
+    return "poor";
+  if (iaq <= 300)
+    return "bad";
+  return "hazard";
+}
+
+// Construct JSON payload
+static String createJsonPayload() {
+  char json[1024];
+  sprintf(json,
+          "{\"device_id\":%u,"
+          "\"sequence\":%u,"
+          "\"uptime\":%u,"
+          "\"temperature\":%.2f,"
+          "\"humidity\":%.2f,"
+          "\"pressure\":%.3f,"
+          "\"iaq\":%u,"
+          "\"iaq_accuracy\":%u,"
+          "\"iaq_label\":\"%s\","
+          "\"static_iaq\":%u,"
+          "\"co2_ppm\":%u,"
+          "\"voc_ppm\":%.2f,"
+          "\"gas_percent\":%u,"
+          "\"stabilized\":%s,"
+          "\"run_in_complete\":%s,"
+          "\"rssi\":%d,"
+          "\"snr\":%d}",
+          rxPacket.deviceId, rxPacket.sequence, rxPacket.uptime,
+          rxPacket.temperature / 100.0, rxPacket.humidity / 100.0,
+          rxPacket.pressure / 1000.0, rxPacket.iaq, rxPacket.iaqAccuracy,
+          getIaqLabel(rxPacket.iaq), rxPacket.staticIaq, rxPacket.co2Equivalent,
+          rxPacket.breathVoc / 100.0, rxPacket.gasPercentage,
+          rxPacket.stabStatus ? "true" : "false",
+          rxPacket.runInStatus ? "true" : "false", lastRssi, lastSnr);
+  return String(json);
+}
+
+// Send payload to API
+static void sendToApi(String payload) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(API_ENDPOINT);
+    http.addHeader("Content-Type", "application/json");
+
+    Serial.println("POSTing to API...");
+    int httpResponseCode = http.POST(payload);
+    lastHttpStatus = httpResponseCode;
+
+    if (httpResponseCode > 0) {
+      Serial.printf("API Response: %d\n", httpResponseCode);
+      String response = http.getString();
+      Serial.println(response);
+    } else {
+      Serial.printf("API Error: %s\n",
+                    http.errorToString(httpResponseCode).c_str());
+    }
+    http.end();
+  } else {
+    Serial.println("WiFi disconnected, reconnecting...");
+    WiFi.disconnect();
+    WiFi.reconnect();
+    lastHttpStatus = -1;
+  }
 }
 
 static char buffer[64];
@@ -108,26 +166,26 @@ static char buffer[64];
 static void drawReceiverDashboard() {
   oledDisplay.clear();
 
-  // Header with packet count
-  sprintf(buffer, "RX #%lu", packetsReceived);
+  // Line 0: Packet Stats
+  sprintf(buffer, "RX#%lu API:%d", packetsReceived, lastHttpStatus);
   oledDisplay.write(0, 0, buffer);
 
-  // Device info
-  sprintf(buffer, "Dev:0x%04X Seq:%u", rxPacket.deviceId, rxPacket.sequence);
-  oledDisplay.write(0, 1, buffer);
-
-  // Temperature & Humidity
+  // Line 1: Temp & Humidity
   sprintf(buffer, "T:%d.%02dC H:%u.%02u%%", rxPacket.temperature / 100,
           abs(rxPacket.temperature % 100), rxPacket.humidity / 100,
           rxPacket.humidity % 100);
+  oledDisplay.write(0, 1, buffer);
+
+  // Line 2: IAQ & CO2
+  sprintf(buffer, "IAQ:%u CO2:%u", rxPacket.iaq, rxPacket.co2Equivalent);
   oledDisplay.write(0, 2, buffer);
 
-  // Pressure
-  sprintf(buffer, "P:%u.%ukPa", rxPacket.pressure / 10000,
-          (rxPacket.pressure / 10) % 1000);
+  // Line 3: API Status / Pressure
+  sprintf(buffer, "P:%u.%03uMPa", rxPacket.pressure / 1000,
+          rxPacket.pressure % 1000);
   oledDisplay.write(0, 3, buffer);
 
-  // Signal quality
+  // Line 4: Signal
   sprintf(buffer, "RSSI:%d SNR:%d", lastRssi, lastSnr);
   oledDisplay.write(0, 4, buffer);
 
@@ -137,17 +195,47 @@ static void drawReceiverDashboard() {
 static void drawWaitingScreen() {
   static uint8_t dots = 0;
   oledDisplay.clear();
+  oledDisplay.write(0, 0, " LORA -> API ");
 
-  oledDisplay.write(0, 0, " LORA RECEIVER ");
+  if (WiFi.status() == WL_CONNECTED) {
+    sprintf(buffer, "WiFi: OK (%s)", WiFi.localIP().toString().c_str());
+    oledDisplay.write(0, 1, buffer);
+  } else {
+    oledDisplay.write(0, 1, "WiFi: Disconnected");
+  }
 
   sprintf(buffer, "Waiting%.*s", (dots % 4) + 1, "....");
-  oledDisplay.write(0, 2, buffer);
-
-  sprintf(buffer, "Pkts:%lu Err:%lu", packetsReceived, packetsError);
-  oledDisplay.write(0, 4, buffer);
+  oledDisplay.write(0, 3, buffer);
 
   oledDisplay.commit();
   dots++;
+}
+
+void setup() {
+  Serial.begin(BAUD);
+  Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
+
+  oledDisplay.init();
+
+  // Setup WiFi
+  connectToWifi();
+
+  // Setup Radio
+  radioEvents.TxDone = onTxDone;
+  radioEvents.TxTimeout = onTxTimeout;
+  radioEvents.RxDone = onRxDone;
+  radioEvents.RxTimeout = onRxTimeout;
+  radioEvents.RxError = onRxError;
+
+  Radio.Init(&radioEvents);
+  Radio.SetChannel(RF_FREQUENCY);
+  Radio.SetRxConfig(MODEM_LORA, LORA_BANDWIDTH, LORA_SPREADING_FACTOR,
+                    LORA_CODINGRATE, 0, LORA_PREAMBLE_LENGTH,
+                    LORA_FIX_LENGTH_PAYLOAD_ON, 0, true, 0, 0,
+                    LORA_IQ_INVERSION_ON, true, RX_TIMEOUT_VALUE);
+
+  Radio.Rx(0);
+  Serial.println("Setup Complete. Listening...");
 }
 
 void loop() {
@@ -156,39 +244,26 @@ void loop() {
   if (packetReceived) {
     packetReceived = false;
 
-    Serial.printf("\n[RX] Received %u bytes | RSSI: %d | SNR: %d\n", rxSize,
-                  lastRssi, lastSnr);
-
-    // Try to decode the packet
     if (decodePacket(rxBuffer, rxSize, rxPacket)) {
       packetsReceived++;
+      Serial.println("[OK] Packet Received");
 
-      Serial.println("[OK] Packet decoded successfully:");
-      printPacket(rxPacket);
+      String payload = createJsonPayload();
+      Serial.println(payload);
 
-      // Update display with received data
+      sendToApi(payload);
       drawReceiverDashboard();
     } else {
       packetsError++;
-      Serial.println("[ERR] Failed to decode packet (invalid CRC or format)");
-
-      // Print raw bytes for debugging
-      Serial.print("Raw bytes: ");
-      for (uint16_t i = 0; i < rxSize; i++) {
-        Serial.printf("%02X ", rxBuffer[i]);
-      }
-      Serial.println();
+      Serial.println("[ERR] JSON Decode Failed");
     }
   } else {
-    // Show waiting animation if no recent packets
     static uint32_t lastUpdate = 0;
-    if (millis() - lastUpdate > 500) {
+    if (millis() - lastUpdate > 1000) {
       lastUpdate = millis();
       if (packetsReceived == 0) {
         drawWaitingScreen();
       }
     }
   }
-
-  delay(10); //
 }

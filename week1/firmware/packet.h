@@ -1,6 +1,6 @@
 /**
  * @file packet.h
- * @brief LoRaWAN packet encoding/decoding for environmental sensor data
+ * @brief LoRaWAN packet encoding/decoding for BSEC2 environmental sensor data
  * All multi-byte fields are Big Endian (network byte order)
  */
 
@@ -9,24 +9,40 @@
 
 #include <Arduino.h>
 
-#define PACKET_VERSION 0x01
-#define PACKET_SIZE 21       // Total packet size in bytes
+#define PACKET_VERSION 0x02
+#define PACKET_SIZE 30       // Total packet size in bytes
 #define PACKET_HEADER_SIZE 5 // Version + DeviceID + Sequence
 
 /**
- * @brief Structure holding all sensor data for transmission
+ * @brief Structure holding BSEC2 sensor data for transmission
+ *
+ * Uses heat-compensated temperature/humidity from BSEC instead of raw values.
+ * Includes IAQ (Indoor Air Quality) metrics and derived gas outputs.
  */
 struct LoRaPacket {
-  uint8_t version;     ///< Protocol version (PACKET_VERSION)
-  uint16_t deviceId;   ///< Unique device identifier
-  uint16_t sequence;   ///< Packet sequence number (0-65535, wraps)
-  uint32_t uptime;     ///< Seconds since boot
-  int16_t temperature; ///< Temperature in °C × 100 (e.g., 2543 = 25.43°C)
-  uint16_t humidity;   ///< Humidity in % × 100 (e.g., 6500 = 65.00%)
-  uint32_t
-      pressure; ///< Pressure in Pa × 10 (24-bit, e.g., 1013250 = 101325.0 Pa)
-  uint32_t gas; ///< Gas resistance in Ohms (24-bit)
-  uint16_t crc; ///< CRC-16/CCITT checksum
+  uint8_t version;
+  uint16_t deviceId;
+  uint16_t sequence;
+  uint32_t uptime;
+
+  // BSEC Compensated Environmental Data
+  int16_t temperature;
+  uint16_t humidity;
+  uint32_t pressure;
+
+  // BSEC IAQ Outputs
+  uint16_t iaq;
+  uint8_t iaqAccuracy;
+  uint16_t staticIaq;
+  uint16_t co2Equivalent;
+  uint16_t breathVoc;
+  uint8_t gasPercentage;
+
+  // BSEC Status
+  uint8_t stabStatus;
+  uint8_t runInStatus;
+
+  uint16_t crc;
 };
 
 /**
@@ -37,18 +53,28 @@ struct LoRaPacket {
 void initPacket(LoRaPacket *pkt, uint16_t deviceId);
 
 /**
- * @brief Populate packet with current sensor readings
+ * @brief Populate packet with BSEC2 sensor readings
  * @param pkt Pointer to packet structure
  * @param sequence Current sequence number
  * @param uptimeSec Uptime in seconds
- * @param temp Temperature (raw from BME680, ÷100 for °C)
- * @param humidity Humidity (raw from BME680, ÷1000 for %)
- * @param pressure Pressure (raw from BME680, ÷1000 for kPa)
- * @param gas Gas resistance (raw from BME680, ÷100)
+ * @param temperature Compensated temperature (°C × 100)
+ * @param humidity Compensated humidity (% × 100)
+ * @param pressure Pressure in Pa
+ * @param iaq IAQ index (0-500)
+ * @param iaqAccuracy IAQ accuracy (0-3)
+ * @param staticIaq Static IAQ index
+ * @param co2Equivalent CO2 equivalent in ppm
+ * @param breathVoc Breath VOC equivalent (ppm × 100)
+ * @param gasPercentage Gas percentage (0-100)
+ * @param stabStatus Stabilization status
+ * @param runInStatus Run-in status
  */
 void populatePacket(LoRaPacket *pkt, uint16_t sequence, uint32_t uptimeSec,
-                    int32_t temp, int32_t humidity, int32_t pressure,
-                    int32_t gas);
+                    int16_t temperature, uint16_t humidity, uint32_t pressure,
+                    uint16_t iaq, uint8_t iaqAccuracy, uint16_t staticIaq,
+                    uint16_t co2Equivalent, uint16_t breathVoc,
+                    uint8_t gasPercentage, uint8_t stabStatus,
+                    uint8_t runInStatus);
 
 /**
  * @brief Encode packet to byte buffer for transmission
@@ -56,7 +82,7 @@ void populatePacket(LoRaPacket *pkt, uint16_t sequence, uint32_t uptimeSec,
  * @param buffer Output buffer (must be at least PACKET_SIZE bytes)
  * @return Number of bytes written (PACKET_SIZE on success)
  */
-uint8_t encodePacket(const LoRaPacket &pkt, uint8_t *buffer);
+uint8_t encodePacket(LoRaPacket &pkt, uint8_t *buffer);
 
 /**
  * @brief Decode byte buffer to packet structure

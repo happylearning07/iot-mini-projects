@@ -17,6 +17,7 @@ CompileFlags:
     - -I/home/sahil/.arduino15/packages/Heltec-esp32/hardware/esp32/3.0.3/libraries/SPI/src
     - -I/home/sahil/.arduino15/packages/Heltec-esp32/hardware/esp32/3.0.3/libraries/Wire/src
     - -I/home/sahil/Arduino/libraries/U8g2/src
+    - -I/home/sahil//Arduino/libraries/bsec2/src
     - -I/home/sahil/.arduino15/packages/Heltec-esp32/hardware/esp32/3.0.3/libraries/LittleFS/examples/LITTLEFS_PlatformIO/include
     - -I/home/sahil/.arduino15/packages/Heltec-esp32/tools/esp32-arduino-libs/idf-release_v5.1-bd2b9390ef/esp32s3/include
     - -I/home/sahil/.arduino15/packages/Heltec-esp32/tools/esp32-arduino-libs/idf-release_v5.1-bd2b9390ef/esp32s3/include/freertos/FreeRTOS-Kernel/incl ude

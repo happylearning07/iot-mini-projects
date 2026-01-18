@@ -28,32 +28,39 @@ void initPacket(LoRaPacket *pkt, uint16_t deviceId) {
   pkt->temperature = 0;
   pkt->humidity = 0;
   pkt->pressure = 0;
-  pkt->gas = 0;
+  pkt->iaq = 0;
+  pkt->iaqAccuracy = 0;
+  pkt->staticIaq = 0;
+  pkt->co2Equivalent = 0;
+  pkt->breathVoc = 0;
+  pkt->gasPercentage = 0;
+  pkt->stabStatus = 0;
+  pkt->runInStatus = 0;
   pkt->crc = 0;
 }
 
 void populatePacket(LoRaPacket *pkt, uint16_t sequence, uint32_t uptimeSec,
-                    int32_t temp, int32_t humidity, int32_t pressure,
-                    int32_t gas) {
+                    int16_t temperature, uint16_t humidity, uint32_t pressure,
+                    uint16_t iaq, uint8_t iaqAccuracy, uint16_t staticIaq,
+                    uint16_t co2Equivalent, uint16_t breathVoc,
+                    uint8_t gasPercentage, uint8_t stabStatus,
+                    uint8_t runInStatus) {
   pkt->sequence = sequence;
   pkt->uptime = uptimeSec;
-
-  // Temperature: already in °C × 100, fits in int16_t
-  pkt->temperature = (int16_t)temp;
-
-  // Humidity: convert from ÷1000 to ÷100 (e.g., 65432 → 6543)
-  pkt->humidity = (uint16_t)(humidity / 10);
-
-  // Pressure: convert from Pa÷1000 (kPa) to Pa÷10
-  // Input: 101325 (meaning 101.325 kPa = 101325 Pa)
-  // Output: 1013250 (meaning 101325.0 Pa)
-  pkt->pressure = (uint32_t)(pressure * 10) & 0xFFFFFF; // Mask to 24 bits
-
-  // Gas: use raw value (already ÷100), mask to 24 bits
-  pkt->gas = (uint32_t)gas & 0xFFFFFF;
+  pkt->temperature = temperature;
+  pkt->humidity = humidity;
+  pkt->pressure = pressure & 0xFFFFFF; // Mask to 24 bits
+  pkt->iaq = iaq;
+  pkt->iaqAccuracy = iaqAccuracy;
+  pkt->staticIaq = staticIaq;
+  pkt->co2Equivalent = co2Equivalent;
+  pkt->breathVoc = breathVoc;
+  pkt->gasPercentage = gasPercentage;
+  pkt->stabStatus = stabStatus;
+  pkt->runInStatus = runInStatus;
 }
 
-uint8_t encodePacket(const LoRaPacket &pkt, uint8_t *buffer) {
+uint8_t encodePacket(LoRaPacket &pkt, uint8_t *buffer) {
   uint8_t idx = 0;
 
   // Version (1 byte)
@@ -86,24 +93,44 @@ uint8_t encodePacket(const LoRaPacket &pkt, uint8_t *buffer) {
   buffer[idx++] = (pkt.pressure >> 8) & 0xFF;
   buffer[idx++] = pkt.pressure & 0xFF;
 
-  // Gas (3 bytes, Big Endian)
-  buffer[idx++] = (pkt.gas >> 16) & 0xFF;
-  buffer[idx++] = (pkt.gas >> 8) & 0xFF;
-  buffer[idx++] = pkt.gas & 0xFF;
+  // IAQ (2 bytes, Big Endian)
+  buffer[idx++] = (pkt.iaq >> 8) & 0xFF;
+  buffer[idx++] = pkt.iaq & 0xFF;
+
+  // IAQ Accuracy (1 byte)
+  buffer[idx++] = pkt.iaqAccuracy;
+
+  // Static IAQ (2 bytes, Big Endian)
+  buffer[idx++] = (pkt.staticIaq >> 8) & 0xFF;
+  buffer[idx++] = pkt.staticIaq & 0xFF;
+
+  // CO2 Equivalent (2 bytes, Big Endian)
+  buffer[idx++] = (pkt.co2Equivalent >> 8) & 0xFF;
+  buffer[idx++] = pkt.co2Equivalent & 0xFF;
+
+  // Breath VOC (2 bytes, Big Endian)
+  buffer[idx++] = (pkt.breathVoc >> 8) & 0xFF;
+  buffer[idx++] = pkt.breathVoc & 0xFF;
+
+  // Gas Percentage (1 byte)
+  buffer[idx++] = pkt.gasPercentage;
+
+  // Stabilization Status (1 byte)
+  buffer[idx++] = pkt.stabStatus;
+
+  // Run-in Status (1 byte)
+  buffer[idx++] = pkt.runInStatus;
 
   // Calculate CRC over all data bytes (excluding CRC field itself)
-  uint16_t crc = calculateCRC16(buffer, idx);
+  pkt.crc = calculateCRC16(buffer, idx);
 
   // CRC-16 (2 bytes, Big Endian)
-  buffer[idx++] = (crc >> 8) & 0xFF;
-  buffer[idx++] = crc & 0xFF;
+  buffer[idx++] = (pkt.crc >> 8) & 0xFF;
+  buffer[idx++] = pkt.crc & 0xFF;
 
-  return idx; // Should be PACKET_SIZE (21)
+  return idx; // Should be PACKET_SIZE (33)
 }
 
-/**
- * @brief Decode byte buffer to packet structure
- */
 bool decodePacket(const uint8_t *buffer, uint8_t size, LoRaPacket &pkt) {
   if (size < PACKET_SIZE) {
     return false;
@@ -146,10 +173,33 @@ bool decodePacket(const uint8_t *buffer, uint8_t size, LoRaPacket &pkt) {
                  ((uint32_t)buffer[idx + 1] << 8) | buffer[idx + 2];
   idx += 3;
 
-  // Gas (Big Endian, 3 bytes)
-  pkt.gas = ((uint32_t)buffer[idx] << 16) | ((uint32_t)buffer[idx + 1] << 8) |
-            buffer[idx + 2];
-  idx += 3;
+  // IAQ (Big Endian)
+  pkt.iaq = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
+  idx += 2;
+
+  // IAQ Accuracy
+  pkt.iaqAccuracy = buffer[idx++];
+
+  // Static IAQ (Big Endian)
+  pkt.staticIaq = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
+  idx += 2;
+
+  // CO2 Equivalent (Big Endian)
+  pkt.co2Equivalent = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
+  idx += 2;
+
+  // Breath VOC (Big Endian)
+  pkt.breathVoc = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
+  idx += 2;
+
+  // Gas Percentage
+  pkt.gasPercentage = buffer[idx++];
+
+  // Stabilization Status
+  pkt.stabStatus = buffer[idx++];
+
+  // Run-in Status
+  pkt.runInStatus = buffer[idx++];
 
   // CRC (Big Endian)
   pkt.crc = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
@@ -163,24 +213,34 @@ bool decodePacket(const uint8_t *buffer, uint8_t size, LoRaPacket &pkt) {
   return true;
 }
 
-/**
- * @brief Print packet contents to Serial for debugging
- */
 void printPacket(const LoRaPacket &pkt) {
-  Serial.println("=== LoRa Packet ===");
+  Serial.println("=== LoRa Packet (BSEC2) ===");
   Serial.printf("  Version:     0x%02X\n", pkt.version);
   Serial.printf("  Device ID:   0x%04X (%u)\n", pkt.deviceId, pkt.deviceId);
   Serial.printf("  Sequence:    %u\n", pkt.sequence);
   Serial.printf("  Uptime:      %u sec (%02d:%02d:%02d)\n", pkt.uptime,
                 pkt.uptime / 3600, (pkt.uptime % 3600) / 60, pkt.uptime % 60);
+
+  Serial.println("--- Environmental Data ---");
   Serial.printf("  Temperature: %d.%02d °C\n", pkt.temperature / 100,
                 abs(pkt.temperature % 100));
   Serial.printf("  Humidity:    %u.%02u %%\n", pkt.humidity / 100,
                 pkt.humidity % 100);
-  Serial.printf("  Pressure:    %u.%u Pa (%u.%03u kPa)\n", pkt.pressure / 10,
-                pkt.pressure % 10, pkt.pressure / 10000,
-                (pkt.pressure / 10) % 1000);
-  Serial.printf("  Gas:         %u ohms\n", pkt.gas);
+  Serial.printf("  Pressure:    %u.%03u MPa\n", pkt.pressure / 1000,
+                (pkt.pressure) % 1000);
+
+  Serial.println("--- IAQ Data ---");
+  Serial.printf("  IAQ:         %u (accuracy: %u)\n", pkt.iaq, pkt.iaqAccuracy);
+  Serial.printf("  Static IAQ:  %u\n", pkt.staticIaq);
+  Serial.printf("  CO2 equiv:   %u ppm\n", pkt.co2Equivalent);
+  Serial.printf("  bVOC equiv:  %u.%02u ppm\n", pkt.breathVoc / 100,
+                pkt.breathVoc % 100);
+  Serial.printf("  Gas %%:       %u%%\n", pkt.gasPercentage);
+
+  Serial.println("--- Status ---");
+  Serial.printf("  Stabilized:  %s\n", pkt.stabStatus ? "Yes" : "No");
+  Serial.printf("  Run-in:      %s\n",
+                pkt.runInStatus ? "Complete" : "Ongoing");
   Serial.printf("  CRC:         0x%04X\n", pkt.crc);
-  Serial.println("===================");
+  Serial.println("============================");
 }
