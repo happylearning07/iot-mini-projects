@@ -3,7 +3,6 @@
 ## LSTM model
 
 ### Features
-- delta
 - temperature
 - pressure
 - humidity
