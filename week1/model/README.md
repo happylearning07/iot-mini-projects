@@ -1,15 +1,27 @@
 # ML models
 
-## LiteRT model
+## LSTM model
 
-Dataset: (github.com/Hrushikraj/Data_Analysis_on_Weather_Dataset)[https://raw.githubusercontent.com/Hrushikraj/Data_Analysis_on_Weather_Dataset/refs/heads/main/1.%20Weather%20Data.csv]
+### Features
+- delta
+- temperature
+- pressure
+- humidity
+- iaq
 
-1. Use `model.ipynb` to train and save the model in `model.tflite`.
-2. Use `xxd -i model.tflite > model_data.cc` to generate `model_data.cc`.
-3. Change `unsigned char` to `const unsigned char` in `model_data.cc` for better memory layout.
-4. Integrate `model_test.cc` in the Arduino code.
+### Outputs
+- pred_temperature
+- pred_pressure
+- pred_humidity
+- pred_iaq
 
-## sklearn model (Multi-Output Ridge Regressor)
+1. `cd lstm`
+2. Use `model.ipynb` to train and save the model in `model.tflite`.
+3. Use `xxd -i model.tflite > model_data.cc` to generate `model_data.cc`.
+4. Change `unsigned char` to `const unsigned char` in `model_data.cc` for better memory layout.
+5. Integrate `model_test.cc` in the Arduino code.
+
+## Ridge Regressor model
 
 ### Features
 - lag1_temp
@@ -38,5 +50,6 @@ Dataset: (github.com/Hrushikraj/Data_Analysis_on_Weather_Dataset)[https://raw.gi
 - hum_target
 - iaq_target
 
-1. Use `train.py` to train and save the model in `model.bin`.
-2. Import `model.py` and use `model.predict(X)`.
+1. `cd ridge-regressor`
+2. Use `train.py` to train and save the model in `model.bin`.
+3. Import `model.py` and use `model.predict(X)`.

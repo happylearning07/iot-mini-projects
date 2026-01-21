@@ -1,5 +1,5 @@
-from model.model import TrainedModel
-from model.util import time_aware_ewma
+from model.ridge_regressor.model import TrainedModel
+from model.ridge_regressor.util import time_aware_ewma
 import pandas as pd
 
 sensor_data = pd.read_csv("./sensor_data.csv", parse_dates=["timestamp"]).set_index("timestamp")
@@ -41,7 +41,7 @@ delta_t = time_diffs[last_reading_index]
 
 X = [lag1_temp, lag2_temp, lag1_pres, lag2_pres, lag1_hum, lag2_hum, lag1_iaq, lag2_iaq, lag1_time_diff, lag2_time_diff, ewma_temp, ewma_pres, ewma_hum, ewma_iaq, roll_mean_temp, roll_mean_pres, roll_mean_hum, roll_mean_iaq, delta_t]
 
-model = TrainedModel("model/model.bin")
+model = TrainedModel("model/ridge_regressor/model.bin")
 y = model.predict([X])
 for pred in y:
     print("Predicted temperature:", pred[0])
