@@ -1,13 +1,21 @@
 """
 Environmental Sensor Monitoring Dashboard
-Minimalist, professional interface for IoT sensor data visualization
+Complete version with model predictions and weather API comparison
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import os, time, sys, warnings
+import os, time, sys, warnings, json
+import numpy as np
+import requests
+from dotenv import load_dotenv
+import os
+
+load_dotenv()  # loads .env file
+
+
 warnings.filterwarnings("ignore")
 
 # ==================== PAGE CONFIG ====================
@@ -19,74 +27,109 @@ st.set_page_config(
 )
 
 # ==================== STYLING ====================
-st.markdown("""
+st.markdown(
+    """
     <style>
+    /* Hide Streamlit default UI */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    
+
+    /* Full app background */
+    .stApp {
+        background-color: #0b0f1a;
+    }
+
+    /* Main content area */
     .main {
         padding-top: 2rem;
         padding-bottom: 2rem;
-        background-color: #0e1117;
+        background-color: #0b0f1a;
     }
-    
-    /* Right sidebar background matching left sidebar */
+
+    /* Card / container background */
     [data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] {
-        background-color: #262730;
+        background-color: #151a2d;
         padding: 1rem;
-        border-radius: 0.5rem;
+        border-radius: 0.6rem;
+        border: 1px solid #23284a;
     }
-    
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #0e1324;
+        border-right: 1px solid #23284a;
+    }
+
+    /* Headings */
     h1 {
-        font-size: 1.75rem;
-        font-weight: 500;
+        font-size: 1.8rem;
+        font-weight: 600;
         color: #ffffff;
-        letter-spacing: -0.02em;
-        margin-bottom: 2rem;
+        margin-bottom: 1.5rem;
     }
-    
+
     h2, h3 {
         font-size: 1.25rem;
         font-weight: 500;
         color: #ffffff;
-        margin-top: 2rem;
+        margin-top: 1.5rem;
         margin-bottom: 1rem;
     }
-    
+
+    /* Metrics */
     [data-testid="stMetricValue"] {
-        font-size: 1.5rem;
-        font-weight: 500;
+        font-size: 1.6rem;
+        font-weight: 600;
         color: #ffffff !important;
     }
-    
+
     [data-testid="stMetricLabel"] {
-        font-size: 0.875rem;
-        font-weight: 400;
-        color: #ffffff !important;
+        font-size: 0.85rem;
+        color: #b5b8d1 !important;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
+        letter-spacing: 0.08em;
     }
-    
+
+    /* Dataframe */
+    .dataframe {
+        background-color: #151a2d !important;
+        color: #ffffff !important;
+        font-size: 0.85rem;
+    }
+
+    /* Horizontal rule */
     hr {
         margin: 2rem 0;
         border: none;
-        border-top: 1px solid #3a3a3a;
+        border-top: 1px solid #23284a;
     }
-    
-    .dataframe {
-        font-size: 0.875rem;
-        color: #ffffff;
-    }
-    
+
+    /* Text */
     p, div, span, .stMarkdown, .stText, .stCaption {
+        color: #e6e8ff !important;
+    }
+
+    /* Buttons */
+    button {
+        background-color: #1f2547 !important;
         color: #ffffff !important;
+        border-radius: 0.4rem !important;
+        border: 1px solid #2f3570 !important;
+    }
+
+    /* Plotly charts */
+    .js-plotly-plot {
+        background-color: #0b0f1a !important;
     }
     </style>
-""", unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True
+)
+
 
 # ==================== MODEL IMPORTS ====================
-model_dir = os.path.join(os.path.dirname(__file__), "model")
+model_dir = os.path.join(os.path.dirname(__file__), "model/ridge_regressor")
 if model_dir not in sys.path:
     sys.path.insert(0, model_dir)
 
@@ -181,6 +224,42 @@ def load_csv(path):
         st.error(f"Error loading CSV: {e}")
         return pd.DataFrame()
 
+# ==================== WEATHER API ====================
+@st.cache_data(ttl=600)
+def fetch_weather_api():
+    url = "https://open-weather13.p.rapidapi.com/fivedaysforcast"
+    params = {
+        "latitude": "25.580903",
+        "longitude": "84.836289",
+        "lang": "EN"
+    }
+    headers = {
+        "x-rapidapi-key": os.getenv("WEATHER_API_KEY"),
+        "x-rapidapi-host": os.getenv("WEATHER_API_HOST")
+    }
+
+    r = requests.get(url, headers=headers, params=params, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+def extract_weather(data):
+    first = data["list"][0]
+    return {
+        "temperature": first["main"]["temp"] - 273.15,  # Kelvin → °C
+        "humidity": first["main"]["humidity"],
+        "pressure": first["main"]["pressure"]           # hPa
+    }
+
+# ==================== METRICS ====================
+def compute_errors(sensor, api):
+    errors = {
+        "temp": abs(sensor["temperature"] - api["temperature"]),
+        "humidity": abs(sensor["humidity"] - api["humidity"]),
+        "pressure": abs(sensor["pressure"] - api["pressure"])
+    }
+    mae = np.mean(list(errors.values()))
+    return errors, mae
+
 # ==================== FEATURE CALC ====================
 def calculate_features(df):
     """Calculate features from sensor data for model prediction"""
@@ -261,7 +340,7 @@ def calculate_features(df):
 
 @st.cache_resource
 def load_model():
-    path = "model/model.bin"
+    path = "model/ridge_regressor/model.bin"
     if os.path.exists(path):
         return TrainedModel(path)
     return None
@@ -275,7 +354,7 @@ with st.sidebar:
     time_range = st.selectbox(
         "Time Range",
         ["Last Hour", "Last 6 Hours", "Last 24 Hours", "Last 7 Days", "All Data"],
-        index=2
+        index=4
     )
     
     st.markdown("---")
@@ -290,6 +369,18 @@ if "df_all" not in st.session_state or updated:
         st.session_state.df_all = pd.DataFrame()
 
 df_all = st.session_state.df_all
+
+# ==================== WEATHER FETCH ====================
+if "weather" not in st.session_state:
+    st.session_state.weather = None
+
+# Fetch weather on file update or if not loaded
+try:
+    api_raw = fetch_weather_api()
+    st.session_state.weather = extract_weather(api_raw)
+except:
+    if st.session_state.weather is None:
+        st.session_state.weather = None
 
 # ==================== DEVICE SELECT ====================
 with st.sidebar:
@@ -325,16 +416,10 @@ with main_col:
                 "Last 7 Days": timedelta(days=7)
             }
             
-            # Get the range delta
             range_delta = ranges.get(time_range, timedelta(hours=24))
-            
-            # Get the most recent timestamp in the data
             max_timestamp = df['timestamp'].max()
-            
-            # Calculate start time from the most recent data point
             start_datetime = max_timestamp - range_delta
             
-            # Filter data
             mask = df['timestamp'] >= start_datetime
             filtered_df = df[mask].copy()
             
@@ -358,9 +443,9 @@ with main_col:
             pressure = latest.get('pressure', None)
             if pd.notna(pressure):
                 if pressure < 10:
-                    st.metric("Pressure", f"{pressure*100:.2f} kPa")
+                    st.metric("Pressure", f"{pressure:.2f} atm")
                 else:
-                    st.metric("Pressure", f"{pressure/1000:.2f} kPa")
+                    st.metric("Pressure", f"{pressure:.2f} atm")
             else:
                 st.metric("Pressure", "—")
         with c4:
@@ -454,10 +539,10 @@ with main_col:
                     name='Pressure',
                     line=dict(color='#ffffff', width=1.5),
                     marker=dict(size=4, color='#ffffff'),
-                    hovertemplate='%{y:.2f} kPa<extra></extra>'
+                    hovertemplate='%{y:.2f} atm<extra></extra>'
                 ))
                 fig_press.update_layout(
-                    xaxis_title="", yaxis_title="kPa", height=280,
+                    xaxis_title="", yaxis_title="atm", height=280,
                     margin=dict(l=40, r=20, t=10, b=40),
                     plot_bgcolor='#0e1117', paper_bgcolor='#0e1117',
                     font=dict(size=11, color='#ffffff'),
@@ -565,15 +650,55 @@ with main_col:
 
 # ==================== RIGHT SIDEBAR ====================
 with right_col:
-    st.markdown("### Model Predictions")
+    st.markdown("### Analytics")
     st.markdown("---")
+    
+    # Weather API Comparison
+    st.markdown("#### Weather API vs Sensor")
+    
+    if not df.empty and st.session_state.weather:
+        sensor_vals = {
+            "temperature": latest.get("temperature", None),
+            "humidity": latest.get("humidity", None),
+            "pressure": latest.get("pressure", None)
+        }
+        
+        if all(pd.notna(v) for v in sensor_vals.values()):
+            api_vals = st.session_state.weather
+            api_vals["pressure"] = float(api_vals["pressure"]) / 1000.0 # hPa → atm
+            errors, mae = compute_errors(sensor_vals, api_vals)
+
+            st.markdown("**API (Current)**")
+            st.write(f"🌡 {api_vals['temperature']:.2f} °C")
+            st.write(f"💧 {api_vals['humidity']:.1f} %")
+            st.write(f"📈 {api_vals['pressure']:.1f} atm")
+
+            st.markdown("**Sensor**")
+            st.write(f"🌡 {sensor_vals['temperature']:.2f} °C")
+            st.write(f"💧 {sensor_vals['humidity']:.1f} %")
+            st.write(f"📈 {sensor_vals['pressure']:.1f} atm")
+
+            st.markdown("**Errors (MAE)**")
+            st.metric("Temp", f"{errors['temp']:.2f}", delta=None, delta_color="off")
+            st.metric("Humid", f"{errors['humidity']:.2f}", delta=None, delta_color="off")
+            st.metric("Press", f"{errors['pressure']:.2f}", delta=None, delta_color="off")
+            st.metric("Overall", f"{mae:.2f}", delta=None, delta_color="off")
+        else:
+            st.info("Waiting for complete sensor data")
+    else:
+        st.info("Waiting for API response")
+
+    st.markdown("---")
+    
+    # Model Predictions
+    st.markdown("#### Model Predictions")
 
     if not df.empty and len(df) >= 3:
         features, X_df = calculate_features(df)
         model = load_model()
 
         if features is not None:
-            st.markdown("#### Input Features")
+            st.markdown("**Input Features**")
             st.write(f"Temp (t-1): {features['lag1_temp']:.2f}")
             st.write(f"Temp (t-2): {features['lag2_temp']:.2f}")
             st.write(f"Pressure (t-1): {features['lag1_pres']:.2f}")
@@ -581,8 +706,7 @@ with right_col:
             st.write(f"IAQ (t-1): {features['lag1_iaq']:.0f}")
             st.write(f"Time Delta: {features['delta_t']:.2f} min")
 
-            st.markdown("---")
-            st.markdown("#### Next Reading")
+            st.markdown("**Next Reading**")
 
             if model is None:
                 st.warning("Model not loaded")
