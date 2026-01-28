@@ -9,6 +9,7 @@
 #include "display.h"
 #include "lora_config.h"
 #include "packet.h"
+#include "model.h"
 #include <Arduino.h>
 #include <HTTPClient.h>
 #include <LoRaWan_APP.h>
