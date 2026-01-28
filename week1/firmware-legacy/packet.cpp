@@ -4,7 +4,7 @@
 static const uint16_t CRC16_POLY = 0x1021;
 static const uint16_t CRC16_INIT = 0xFFFF;
 
-uint16_t calculateCRC16(const uint8_t *data, uint8_t length) {
+uint16_t bsecCRC16(const uint8_t *data, uint8_t length) {
   uint16_t crc = CRC16_INIT;
 
   for (uint8_t i = 0; i < length; i++) {
@@ -22,6 +22,7 @@ uint16_t calculateCRC16(const uint8_t *data, uint8_t length) {
 
 void initPacket(LoRaPacket *pkt, uint16_t deviceId) {
   pkt->version = PACKET_VERSION;
+  pkt->packetType = PACKET_TYPE_ENV;
   pkt->deviceId = deviceId;
   pkt->sequence = 0;
   pkt->uptime = 0;
@@ -36,6 +37,17 @@ void initPacket(LoRaPacket *pkt, uint16_t deviceId) {
   pkt->gasPercentage = 0;
   pkt->stabStatus = 0;
   pkt->runInStatus = 0;
+  pkt->crc = 0;
+}
+
+void initAnalogPacket(AnalogPacket *pkt, uint16_t deviceId) {
+  pkt->version = PACKET_VERSION;
+  pkt->packetType = PACKET_TYPE_ANALOG;
+  pkt->deviceId = deviceId;
+  pkt->sequence = 0;
+  pkt->uptime = 0;
+  pkt->mq135 = 0;
+  pkt->anemometer = 0;
   pkt->crc = 0;
 }
 
@@ -60,11 +72,23 @@ void populatePacket(LoRaPacket *pkt, uint16_t sequence, uint32_t uptimeSec,
   pkt->runInStatus = runInStatus;
 }
 
+void populateAnalogPacket(AnalogPacket *pkt, uint16_t sequence,
+                          uint32_t uptimeSec, uint16_t mq135,
+                          uint16_t anemometer) {
+  pkt->sequence = sequence;
+  pkt->uptime = uptimeSec;
+  pkt->mq135 = mq135;
+  pkt->anemometer = anemometer;
+}
+
 uint8_t encodePacket(LoRaPacket &pkt, uint8_t *buffer) {
   uint8_t idx = 0;
 
   // Version (1 byte)
   buffer[idx++] = pkt.version;
+
+  // Packet Type (1 byte)
+  buffer[idx++] = pkt.packetType;
 
   // Device ID (2 bytes, Big Endian)
   buffer[idx++] = (pkt.deviceId >> 8) & 0xFF;
@@ -122,13 +146,54 @@ uint8_t encodePacket(LoRaPacket &pkt, uint8_t *buffer) {
   buffer[idx++] = pkt.runInStatus;
 
   // Calculate CRC over all data bytes (excluding CRC field itself)
-  pkt.crc = calculateCRC16(buffer, idx);
+  pkt.crc = bsecCRC16(buffer, idx);
 
   // CRC-16 (2 bytes, Big Endian)
   buffer[idx++] = (pkt.crc >> 8) & 0xFF;
   buffer[idx++] = pkt.crc & 0xFF;
 
-  return idx; // Should be PACKET_SIZE (33)
+  return idx; // Should be PACKET_SIZE (30)
+}
+
+uint8_t encodeAnalogPacket(AnalogPacket &pkt, uint8_t *buffer) {
+  uint8_t idx = 0;
+
+  // Version (1 byte)
+  buffer[idx++] = pkt.version;
+
+  // Packet Type (1 byte)
+  buffer[idx++] = pkt.packetType;
+
+  // Device ID (2 bytes, Big Endian)
+  buffer[idx++] = (pkt.deviceId >> 8) & 0xFF;
+  buffer[idx++] = pkt.deviceId & 0xFF;
+
+  // Sequence (2 bytes, Big Endian)
+  buffer[idx++] = (pkt.sequence >> 8) & 0xFF;
+  buffer[idx++] = pkt.sequence & 0xFF;
+
+  // Uptime (4 bytes, Big Endian)
+  buffer[idx++] = (pkt.uptime >> 24) & 0xFF;
+  buffer[idx++] = (pkt.uptime >> 16) & 0xFF;
+  buffer[idx++] = (pkt.uptime >> 8) & 0xFF;
+  buffer[idx++] = pkt.uptime & 0xFF;
+
+  // MQ135 (2 bytes)
+  buffer[idx++] = (pkt.mq135 >> 8) & 0xFF;
+  buffer[idx++] = pkt.mq135 & 0xFF;
+
+  // Anemometer (2 bytes)
+  buffer[idx++] = (pkt.anemometer >> 8) & 0xFF;
+  buffer[idx++] = pkt.anemometer & 0xFF;
+
+  // Calculate CRC over all data bytes (excluding CRC field itself)
+  pkt.crc = bsecCRC16(buffer, idx);
+
+  // CRC-16 (2 bytes, Big Endian)
+  buffer[idx++] = (pkt.crc >> 8) & 0xFF;
+  buffer[idx++] = pkt.crc & 0xFF;
+
+  return idx; // Should be ANALOG_PACKET_SIZE
 }
 
 bool decodePacket(const uint8_t *buffer, uint8_t size, LoRaPacket &pkt) {
@@ -143,6 +208,12 @@ bool decodePacket(const uint8_t *buffer, uint8_t size, LoRaPacket &pkt) {
 
   // Check version compatibility
   if (pkt.version != PACKET_VERSION) {
+    return false;
+  }
+
+  // Packet Type
+  pkt.packetType = buffer[idx++];
+  if (pkt.packetType != PACKET_TYPE_ENV) {
     return false;
   }
 
@@ -205,7 +276,59 @@ bool decodePacket(const uint8_t *buffer, uint8_t size, LoRaPacket &pkt) {
   pkt.crc = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
 
   // Verify CRC
-  uint16_t calculatedCrc = calculateCRC16(buffer, PACKET_SIZE - 2);
+  uint16_t calculatedCrc = bsecCRC16(buffer, PACKET_SIZE - 2);
+  if (calculatedCrc != pkt.crc) {
+    return false;
+  }
+
+  return true;
+}
+
+bool decodeAnalogPacket(const uint8_t *buffer, uint8_t size,
+                        AnalogPacket &pkt) {
+  if (size < ANALOG_PACKET_SIZE) {
+    return false;
+  }
+
+  uint8_t idx = 0;
+
+  // Version
+  pkt.version = buffer[idx++];
+  if (pkt.version != PACKET_VERSION)
+    return false;
+
+  // Packet Type
+  pkt.packetType = buffer[idx++];
+  if (pkt.packetType != PACKET_TYPE_ANALOG)
+    return false;
+
+  // Device ID
+  pkt.deviceId = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
+  idx += 2;
+
+  // Sequence
+  pkt.sequence = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
+  idx += 2;
+
+  // Uptime
+  pkt.uptime = ((uint32_t)buffer[idx] << 24) |
+               ((uint32_t)buffer[idx + 1] << 16) |
+               ((uint32_t)buffer[idx + 2] << 8) | buffer[idx + 3];
+  idx += 4;
+
+  // MQ135
+  pkt.mq135 = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
+  idx += 2;
+
+  // Anemometer
+  pkt.anemometer = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
+  idx += 2;
+
+  // CRC
+  pkt.crc = ((uint16_t)buffer[idx] << 8) | buffer[idx + 1];
+
+  // Verify CRC
+  uint16_t calculatedCrc = bsecCRC16(buffer, ANALOG_PACKET_SIZE - 2);
   if (calculatedCrc != pkt.crc) {
     return false;
   }
@@ -216,6 +339,7 @@ bool decodePacket(const uint8_t *buffer, uint8_t size, LoRaPacket &pkt) {
 void printPacket(const LoRaPacket &pkt) {
   Serial.println("=== LoRa Packet (BSEC2) ===");
   Serial.printf("  Version:     0x%02X\n", pkt.version);
+  Serial.printf("  Type:        %s\n", "ENV");
   Serial.printf("  Device ID:   0x%04X (%u)\n", pkt.deviceId, pkt.deviceId);
   Serial.printf("  Sequence:    %u\n", pkt.sequence);
   Serial.printf("  Uptime:      %u sec (%02d:%02d:%02d)\n", pkt.uptime,
@@ -241,6 +365,22 @@ void printPacket(const LoRaPacket &pkt) {
   Serial.printf("  Stabilized:  %s\n", pkt.stabStatus ? "Yes" : "No");
   Serial.printf("  Run-in:      %s\n",
                 pkt.runInStatus ? "Complete" : "Ongoing");
+  Serial.printf("  CRC:         0x%04X\n", pkt.crc);
+  Serial.println("============================");
+}
+
+void printAnalogPacket(const AnalogPacket &pkt) {
+  Serial.println("=== LoRa Packet (ANALOG) ===");
+  Serial.printf("  Version:     0x%02X\n", pkt.version);
+  Serial.printf("  Type:        %s\n", "ANALOG");
+  Serial.printf("  Device ID:   0x%04X (%u)\n", pkt.deviceId, pkt.deviceId);
+  Serial.printf("  Sequence:    %u\n", pkt.sequence);
+  Serial.printf("  Uptime:      %d sec\n", pkt.uptime);
+
+  Serial.println("--- Sensor Data ---");
+  Serial.printf("  MQ135 (Raw):    %u\n", pkt.mq135);
+  Serial.printf("  Anemometer (Raw): %u\n", pkt.anemometer);
+
   Serial.printf("  CRC:         0x%04X\n", pkt.crc);
   Serial.println("============================");
 }

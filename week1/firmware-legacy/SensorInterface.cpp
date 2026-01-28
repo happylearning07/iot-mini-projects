@@ -170,3 +170,9 @@ void SensorInterface::processOutputs(const bsecOutputs &outputs) {
 
   dataReady = true;
 }
+
+// Read analog sensors
+void SensorInterface::readAnalogSensors() {
+  latestData.mq135Raw = analogRead(ANALOG_MQ135_PIN);
+  latestData.anemometerRaw = analogRead(ANALOG_ANEMOMETER_PIN);
+}

@@ -1,7 +1,7 @@
 #ifndef LORA_CONFIG_H_
 #define LORA_CONFIG_H_
 
-#define RF_FREQUENCY 915000000 // change to 865000000 for India
+#define RF_FREQUENCY 865000000 
 #define TX_OUTPUT_POWER 14
 #define LORA_BANDWIDTH 0
 #define LORA_SPREADING_FACTOR 7

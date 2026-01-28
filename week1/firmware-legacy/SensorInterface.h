@@ -10,6 +10,10 @@
 #define DEFAULT_BME680_SCL 42
 #define DEFAULT_BME680_ADDRESS 0x77
 
+/* Analog sensor pins */
+#define ANALOG_MQ135_PIN 6
+#define ANALOG_ANEMOMETER_PIN 4
+
 /**
  * @brief BSEC2 sensor data structure
  * Contains all processed outputs from BSEC library
@@ -26,6 +30,8 @@ struct BsecData {
   uint8_t gasPercentage;
   uint8_t stabStatus;
   uint8_t runInStatus;
+  uint16_t mq135Raw;
+  uint16_t anemometerRaw;
 };
 
 /**
@@ -115,6 +121,17 @@ public:
    * @brief Print status to Serial (for debugging)
    */
   void printStatus();
+
+  /**
+   * @brief Read analog sensors (MQ135 and anemometer)
+   * Updates latestData with current analog values
+   */
+  void readAnalogSensors();
+
+  /**
+   * @brief Get data without clearing flag
+   */
+  BsecData peekData() { return latestData; }
 };
 
 #endif // SENSORINTERFACE_H_

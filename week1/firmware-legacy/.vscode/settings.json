@@ -1,0 +1,6 @@
+#line 1 "/home/sahil/Work/iot-mini-projects/week1/firmware/.vscode/settings.json"
+{
+    "clangd.arguments": [
+        "--query-driver=/home/sahil/.arduino15/packages/Heltec-esp32/tools/esp-xs3/2302/bin/xtensa-esp32s3-elf-g++"
+    ]
+}
