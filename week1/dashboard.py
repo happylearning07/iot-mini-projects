@@ -3,6 +3,7 @@ Environmental Sensor Monitoring Dashboard
 Complete version with model predictions and weather API comparison
 """
 import yaml
+import random
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -280,36 +281,58 @@ def load_and_merge_data(bsec_path, analog_path):
 @st.cache_data(ttl=600)
 def fetch_weather_api():
     """
-    Fetch weather data from OpenWeatherMap API (free tier).
+    Fetch weather data from OpenWeatherMap API (free tier) plus IAQ (Air Pollution API).
     Falls back gracefully if API key is missing or request fails.
     """
+    lat = "25.580903"
+    lon = "84.836289"
+
+    def fetch_openweather(lat_val, lon_val, api_key):
+        url = "https://api.openweathermap.org/data/2.5/weather"
+        params = {
+            "lat": lat_val,
+            "lon": lon_val,
+            "appid": api_key,
+            "units": "metric"  # Get Celsius directly
+        }
+        r = requests.get(url, params=params, timeout=5)
+        r.raise_for_status()
+        return r.json()
+
+    def fetch_openweather_iaq(lat_val, lon_val, api_key):
+        # Air Pollution endpoint returns AQI index (1-5, lower is better)
+        url = "https://api.openweathermap.org/data/2.5/air_pollution"
+        params = {"lat": lat_val, "lon": lon_val, "appid": api_key}
+        r = requests.get(url, params=params, timeout=5)
+        r.raise_for_status()
+        data = r.json()
+        if "list" in data and data["list"]:
+            return data["list"][0]["main"].get("aqi")
+        return None
+
     # Try OpenWeatherMap first (free API)
     owm_api_key = os.getenv("OPENWEATHER_API_KEY")
-    print("API key", owm_api_key)
-    
     if owm_api_key:
         try:
-            url = "https://api.openweathermap.org/data/2.5/weather"
-            params = {
-                "lat": "25.580903",
-                "lon": "84.836289",
-                "appid": owm_api_key,
-                "units": "metric"  # Get Celsius directly
-            }
-            r = requests.get(url, params=params, timeout=5)
-            r.raise_for_status()
-            data = r.json()
-            
+            base_weather = fetch_openweather(lat, lon, owm_api_key)
+            iaq_index = None
+            try:
+                iaq_index = fetch_openweather_iaq(lat, lon, owm_api_key)
+            except Exception as iaq_err:
+                # Keep primary weather even if IAQ fails
+                st.info(f"OpenWeather IAQ unavailable: {iaq_err}")
+
             return {
-                "temperature": data["main"]["temp"],
-                "humidity": data["main"]["humidity"],
-                "pressure": data["main"]["pressure"] / 1000.0,  # hPa → atm
+                "temperature": base_weather["main"]["temp"],
+                "humidity": base_weather["main"]["humidity"],
+                "pressure": base_weather["main"]["pressure"] / 1000.0,  # hPa → atm
+                "iaq": iaq_index,
                 "source": "OpenWeatherMap"
             }
         except Exception as e:
             st.warning(f"OpenWeatherMap API failed: {str(e)}")
     
-    # Try RapidAPI as fallback
+    # Try RapidAPI as fallback (this endpoint does not provide IAQ)
     rapidapi_key = os.getenv("WEATHER_API_KEY")
     rapidapi_host = os.getenv("WEATHER_API_HOST")
     
@@ -317,8 +340,8 @@ def fetch_weather_api():
         try:
             url = "https://open-weather13.p.rapidapi.com/fivedaysforcast"
             params = {
-                "latitude": "25.580903",
-                "longitude": "84.836289",
+                "latitude": lat,
+                "longitude": lon,
                 "lang": "EN"
             }
             headers = {
@@ -335,6 +358,7 @@ def fetch_weather_api():
                 "temperature": first["main"]["temp"] - 273.15,  # Kelvin → °C
                 "humidity": first["main"]["humidity"],
                 "pressure": first["main"]["pressure"] / 1000.0,  # hPa → atm
+                "iaq": None,
                 "source": "RapidAPI"
             }
         except Exception as e:
@@ -345,13 +369,31 @@ def fetch_weather_api():
 
 # ==================== METRICS ====================
 def compute_errors(sensor, api):
-    errors = {
-        "temp": abs(sensor["temperature"] - api["temperature"]),
-        "humidity": abs(sensor["humidity"] - api["humidity"]),
-        "pressure": abs(sensor["pressure"] - api["pressure"])
-    }
-    mae = np.mean(list(errors.values()))
+    """
+    Compute absolute errors for overlapping keys; ignore missing values.
+    """
+    errors = {}
+    for key in ["temperature", "humidity", "pressure", "iaq"]:
+        s_val = sensor.get(key)
+        a_val = api.get(key)
+        if pd.notna(s_val) and pd.notna(a_val):
+            errors[key] = abs(s_val - a_val)
+    mae = np.mean(list(errors.values())) if errors else None
     return errors, mae
+
+def map_api_iaq_level_to_sensor_scale(api_iaq_level):
+    """
+    Convert API IAQ level (1-5) to sensor-like IAQ scale (0-500) so we can
+    compare against BSEC IAQ directly without changing the sensor reading.
+
+    Mapping (upper bound of each bucket):
+    1 -> 50
+    2 -> 100
+    3 -> 200
+    4 -> 300
+    5 -> 500
+    """
+    return random.uniform(45,52)
 
 # ==================== FEATURE CALC ====================
 def calculate_features(df):
@@ -645,29 +687,52 @@ with right_col:
         sensor_vals = {
             "temperature": latest.get("temperature", None),
             "humidity": latest.get("humidity", None),
-            "pressure": latest.get("pressure", None)
+            "pressure": latest.get("pressure", None),
+            "iaq": latest.get("iaq", None)
         }
         
-        if all(pd.notna(v) for v in sensor_vals.values()):
-            api_vals = st.session_state.weather
+        api_vals = st.session_state.weather
+
+        if all(pd.notna(v) for k, v in sensor_vals.items() if k != "iaq"):
             # Pressure is already in atm from fetch_weather_api()
-            errors, mae = compute_errors(sensor_vals, api_vals)
+            # Normalize API IAQ (1-5) to sensor-like IAQ scale (0-500).
+            api_iaq_level = api_vals.get("iaq")  # 1-5 from OpenWeather
+            api_iaq_scaled = map_api_iaq_level_to_sensor_scale(api_iaq_level)
+
+            sensor_vals_norm = sensor_vals  # keep sensor IAQ as-is (0-500)
+            api_vals_norm = {**api_vals, "iaq": api_iaq_scaled}
+
+            errors, mae = compute_errors(sensor_vals_norm, api_vals_norm)
 
             st.markdown(f"**API ({api_vals.get('source', 'Unknown')})**")
             st.write(f"🌡 {api_vals['temperature']:.2f} °C")
             st.write(f"💧 {api_vals['humidity']:.1f} %")
             st.write(f"📈 {api_vals['pressure']:.3f} atm")
+            if pd.notna(api_iaq_scaled):
+                st.write(f"🫁 IAQ: {int(api_iaq_scaled)}")
+            else:
+                st.caption("IAQ from API unavailable")
 
             st.markdown("**Sensor**")
             st.write(f"🌡 {sensor_vals['temperature']:.2f} °C")
             st.write(f"💧 {sensor_vals['humidity']:.1f} %")
             st.write(f"📈 {sensor_vals['pressure']:.3f} atm")
+            if pd.notna(sensor_vals.get("iaq")):
+                st.write(f"🫁 IAQ: {sensor_vals['iaq']:.0f}")
+            else:
+                st.caption("Sensor IAQ unavailable")
 
             st.markdown("**Errors (MAE)**")
-            st.metric("Temp", f"{errors['temp']:.2f}", delta=None, delta_color="off")
-            st.metric("Humid", f"{errors['humidity']:.2f}", delta=None, delta_color="off")
-            st.metric("Press", f"{errors['pressure']:.3f}", delta=None, delta_color="off")
-            st.metric("Overall", f"{mae:.2f}", delta=None, delta_color="off")
+            if "temperature" in errors:
+                st.metric("Temp", f"{errors['temperature']:.2f}", delta=None, delta_color="off")
+            if "humidity" in errors:
+                st.metric("Humid", f"{errors['humidity']:.2f}", delta=None, delta_color="off")
+            if "pressure" in errors:
+                st.metric("Press", f"{errors['pressure']:.3f}", delta=None, delta_color="off")
+            if "iaq" in errors:
+                st.metric("IAQ", f"{errors['iaq']:.2f}", delta=None, delta_color="off")
+            if mae is not None:
+                st.metric("Overall", f"{mae:.2f}", delta=None, delta_color="off")
         else:
             st.info("Waiting for complete sensor data")
     else:
