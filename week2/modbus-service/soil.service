@@ -1,0 +1,19 @@
+[Unit]
+Description=Soil Sensor Startup Script
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/soil/run.sh
+Restart=always
+RestartSec=3
+User=vangogh
+Group=vangogh
+WorkingDirectory=/opt/soil
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
